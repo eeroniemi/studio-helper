@@ -1,12 +1,14 @@
 'use strict';
 
-let request = require('request'),
+const request = require('request'),
     mime = require('mime-types'),
     Promise = require('bluebird'),
     fs = require('fs'),
     path = require('path'),
+    os = require('os'),
     ignore = require('ignore'),
     throat = require('throat')(Promise),
+    Cryptr = require('cryptr'),
     ProgressBar = require('progress');
 
 Promise.longStackTraces();
@@ -14,7 +16,8 @@ Promise.longStackTraces();
 const API_URL = '/studioapi/v2/',
       CHUNK_SIZE = 4000000,
       MAX_CONCURRENT_CONNECTIONS = 1,
-      CREDENTIALS_FILE = '.studio-credentials',
+      CREDENTIALS_SECRET = 'Not/Really/That/Secret/Stuff/Encrypted/With/This/Secret!',
+      CREDENTIALS_FILE = path.join(os.homedir(), '.studio-helper-credentials'), // homedir by default
       IGNORE_FILE = '.studio-ignore',
       //PROMPT_EXPIRE_TIME = 120000,
       LONG_SESSION = 1;
@@ -46,6 +49,8 @@ class StudioHelper {
    * @param {string}  [settings.ignoreFile=.studio-ignore] - Utilised by [push]{@link StudioHelper#push} method. Uses gitignore {@link https://git-scm.com/docs/gitignore|spec}
    */
   constructor(settings) {
+    console.log(os.homedir());
+
     if (!settings) {
       throw Error('StudioHelper#constructor: no settings object');
     }
@@ -53,8 +58,12 @@ class StudioHelper {
       throw Error('StudioHelper#constructor: settings.studio must be set');
     }
 
-    this.apiUrl = 'https://' + settings.studio + API_URL;
+    this.studio = settings.studio;
+
+    this.apiUrl = 'https://' + this.studio + API_URL;
     this.authToken = '';
+
+    this.cryptr = new Cryptr(CREDENTIALS_SECRET);
 
     this.inquirer = require('inquirer');
     this.prompt = this.inquirer.createPromptModule();
@@ -98,7 +107,7 @@ class StudioHelper {
       this.ignoreFile = IGNORE_FILE;
     }
 
-    this.credentials = this._getCredentials();
+    this.credentials = this._getCredentials(this.studio);
 
     if (this.ignoreFile) {
       this._addToIgnore(this.ignoreFile);
@@ -125,12 +134,18 @@ class StudioHelper {
   /**
    * @private
    */
-  _getCredentials() {
+  _getCredentials(studio) {
     let data = null;
 
     try {
       data = JSON.parse(fs.readFileSync(this.credentialsFile, 'utf8'));
     } catch (e) {
+    }
+
+    // Only get specific studio data
+    if (data && studio) {
+      let encryptedStudio = this.cryptr.encrypt(studio);
+      return data[encryptedStudio];
     }
 
     return data;
@@ -488,12 +503,15 @@ class StudioHelper {
   /**
    * @private
    */
-  _updateCredentials(data) {
-    let self = this;
+  _updateCredentials(credentialsData) {
+    console.log(this.studio);
+    let data = this._getCredentials() || {};
+    let hash = this.cryptr.encrypt(this.studio);
+    data[hash] = credentialsData;
 
-    fs.writeFile(this.credentialsFile, JSON.stringify(data), function(err) {
+    fs.writeFile(this.credentialsFile, JSON.stringify(data), (err) => {
       if (err) {
-        self._log(err);
+        this._log(err);
       }
     });
   }
@@ -597,8 +615,7 @@ class StudioHelper {
           return self.login(result.name, result.password, result.token, LONG_SESSION).then(function(res) {
             if (res.status === 'ok') {
               self._updateCredentials({
-                'authToken': res.result.authToken,
-                'username': result.name
+                'authToken': res.result.authToken
               });
 
               self.setAuthToken(res.result.authToken);
